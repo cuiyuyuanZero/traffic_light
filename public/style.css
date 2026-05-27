@@ -339,6 +339,29 @@ body {
   animation: pulseGreen 2.2s infinite ease-in-out;
 }
 
+/* ERROR STATE: Flashing Red */
+.light.red.error {
+  opacity: 1;
+  filter: saturate(1.5) brightness(1.4);
+  background-color: var(--red-color);
+  box-shadow: 0 0 30px 10px var(--red-glow);
+  animation: errorFlash 0.5s infinite alternate ease-in-out;
+}
+
+@keyframes errorFlash {
+  from { opacity: 0.3; transform: scale(0.95); filter: brightness(0.8); }
+  to { opacity: 1; transform: scale(1.05); filter: brightness(1.5); box-shadow: 0 0 40px 15px var(--red-glow); }
+}
+
+/* OFFLINE STATE: Gray / Dimmed */
+.light.offline {
+  opacity: 0.3;
+  filter: grayscale(1) brightness(0.4);
+  background-color: #444;
+  box-shadow: none !important;
+  animation: none !important;
+}
+
 /* Keyframes for Bulbs Pulsing Glows */
 @keyframes pulseRed {
   0%, 100% { box-shadow: 0 0 20px 2px var(--red-glow), inset 0 0 15px rgba(255,255,255,0.3); }

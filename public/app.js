@@ -72,13 +72,24 @@ document.addEventListener('DOMContentLoaded', () => {
     const textEl = agent === 'codex' ? codexStateText : claudeStateText;
 
     // Reset classes
-    lights.red.classList.remove('active');
-    lights.orange.classList.remove('active');
-    lights.green.classList.remove('active');
+    lights.red.classList.remove('active', 'error', 'offline');
+    lights.orange.classList.remove('active', 'offline');
+    lights.green.classList.remove('active', 'offline');
     
-    textEl.classList.remove('red-text', 'orange-text', 'green-text');
+    textEl.classList.remove('red-text', 'orange-text', 'green-text', 'error-text', 'offline-text');
 
-    if (state === 'thinking') {
+    if (state === 'error') {
+      lights.red.classList.add('active', 'error');
+      textEl.textContent = '需要干预 / 错误 (Attention Required)';
+      textEl.classList.add('red-text');
+      addLog(`${agent.toUpperCase()} 需要人工干预或发生错误！`, 'error');
+    } else if (state === 'offline') {
+      lights.red.classList.add('offline');
+      lights.orange.classList.add('offline');
+      lights.green.classList.add('offline');
+      textEl.textContent = '离线 (Offline)';
+      textEl.classList.add('offline-text');
+    } else if (state === 'thinking') {
       lights.red.classList.add('active');
       textEl.textContent = '思考中 (Thinking)';
       textEl.classList.add('red-text');

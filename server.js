@@ -59,6 +59,8 @@ const state = {
   claude: { state: 'finished', lastActive: Date.now() }
 };
 
+const knownFileSizes = {}; // Persistent tracking of file positions to handle session switching
+
 // Express Setup
 const app = express();
 app.use(express.json());
@@ -93,12 +95,12 @@ function updateAgentState(agent, newState, detail = '') {
 
 // Log Tailer Engine
 class LogTailer {
-  constructor(filePath, onLine, startAtEnd = false) {
+  constructor(filePath, onLine, options = {}) {
     this.filePath = filePath;
     this.onLine = onLine;
     this.watcher = null;
-    this.position = 0;
-    this.startAtEnd = startAtEnd;
+    this.position = options.startPos || 0;
+    this.startAtEnd = options.startAtEnd || false;
     this.lineBuffer = '';
     this.start();
   }
@@ -114,8 +116,9 @@ class LogTailer {
       const stats = fs.statSync(this.filePath);
       if (this.startAtEnd) {
         this.position = stats.size;
+        this.startAtEnd = false; // Reset to avoid re-jumping on restart
       }
-      console.log(`[LogTailer] Started tailing ${this.filePath} at pos ${this.position} (startAtEnd: ${this.startAtEnd})`);
+      console.log(`[LogTailer] Started tailing ${this.filePath} at pos ${this.position}`);
 
       this.readNewContent();
 
@@ -153,6 +156,7 @@ class LogTailer {
       fs.closeSync(fd);
 
       this.position = stats.size;
+      knownFileSizes[this.filePath] = this.position;
       
       const newText = this.lineBuffer + buffer.toString('utf8');
       const lines = newText.split('\n');
@@ -181,22 +185,36 @@ class LogTailer {
 // Helpers to find the latest log files
 function getLatestCodexRollout() {
   try {
-    const year = new Date().getFullYear().toString();
-    const month = (new Date().getMonth() + 1).toString().padStart(2, '0');
-    const baseDir = path.join(config.codexRolloutDir, year, month);
+    const baseDir = config.codexRolloutDir;
     if (!fs.existsSync(baseDir)) return null;
     
-    // Collect all rollout files from the most recent 3 days
-    const days = fs.readdirSync(baseDir).filter(d => /^\d+$/.test(d)).sort((a, b) => b - a).slice(0, 3);
+    // Find all .jsonl files in the nested YYYY/MM/DD structure
     let allFiles = [];
-
-    for (const day of days) {
-      const dayDir = path.join(baseDir, day);
-      const files = fs.readdirSync(dayDir)
-        .filter(f => f.startsWith('rollout-') && f.endsWith('.jsonl'))
-        .map(f => ({ path: path.join(dayDir, f), mtime: fs.statSync(path.join(dayDir, f)).mtimeMs }));
-      allFiles = allFiles.concat(files);
-    }
+    const years = fs.readdirSync(baseDir).filter(y => /^\d{4}$/.test(y));
+    
+    // Sort years descending and pick latest 2
+    years.sort((a, b) => b - a).slice(0, 2).forEach(year => {
+      const yearDir = path.join(baseDir, year);
+      const months = fs.readdirSync(yearDir).filter(m => /^\d{2}$/.test(m));
+      
+      months.sort((a, b) => b - a).slice(0, 2).forEach(month => {
+        const monthDir = path.join(yearDir, month);
+        const days = fs.readdirSync(monthDir).filter(d => /^\d{2}$/.test(d));
+        
+        days.sort((a, b) => b - a).slice(0, 3).forEach(day => {
+          const dayDir = path.join(monthDir, day);
+          try {
+            const files = fs.readdirSync(dayDir)
+              .filter(f => f.startsWith('rollout-') && f.endsWith('.jsonl'))
+              .map(f => {
+                const p = path.join(dayDir, f);
+                return { path: p, mtime: fs.statSync(p).mtimeMs };
+              });
+            allFiles = allFiles.concat(files);
+          } catch (e) {}
+        });
+      });
+    });
 
     if (allFiles.length === 0) return null;
     
@@ -211,22 +229,34 @@ function getLatestCodexRollout() {
 
 function getLatestCodexDesktopLog() {
   try {
-    const year = new Date().getFullYear().toString();
-    const month = (new Date().getMonth() + 1).toString().padStart(2, '0');
-    const baseDir = path.join(config.codexDesktopLogDir, year, month);
+    const baseDir = config.codexDesktopLogDir;
     if (!fs.existsSync(baseDir)) return null;
     
-    // Collect all logs from the most recent 3 days
-    const days = fs.readdirSync(baseDir).filter(d => /^\d+$/.test(d)).sort((a, b) => b - a).slice(0, 3);
     let allFiles = [];
-
-    for (const day of days) {
-      const dayDir = path.join(baseDir, day);
-      const files = fs.readdirSync(dayDir)
-        .filter(f => f.startsWith('codex-desktop-') && f.endsWith('.log'))
-        .map(f => ({ path: path.join(dayDir, f), mtime: fs.statSync(path.join(dayDir, f)).mtimeMs }));
-      allFiles = allFiles.concat(files);
-    }
+    const years = fs.readdirSync(baseDir).filter(y => /^\d{4}$/.test(y));
+    
+    years.sort((a, b) => b - a).slice(0, 2).forEach(year => {
+      const yearDir = path.join(baseDir, year);
+      const months = fs.readdirSync(yearDir).filter(m => /^\d{2}$/.test(m));
+      
+      months.sort((a, b) => b - a).slice(0, 2).forEach(month => {
+        const monthDir = path.join(yearDir, month);
+        const days = fs.readdirSync(monthDir).filter(d => /^\d{2}$/.test(d));
+        
+        days.sort((a, b) => b - a).slice(0, 3).forEach(day => {
+          const dayDir = path.join(monthDir, day);
+          try {
+            const files = fs.readdirSync(dayDir)
+              .filter(f => f.startsWith('codex-desktop-') && f.endsWith('.log'))
+              .map(f => {
+                const p = path.join(dayDir, f);
+                return { path: p, mtime: fs.statSync(p).mtimeMs };
+              });
+            allFiles = allFiles.concat(files);
+          } catch (e) {}
+        });
+      });
+    });
 
     if (allFiles.length === 0) return null;
 
@@ -243,7 +273,7 @@ let codexRolloutWatcher = null;
 let codexDesktopWatcher = null;
 let claudeWatcher = null;
 
-function initLogWatchers() {
+function initLogWatchers(isInitialLoad = false) {
   if (codexRolloutWatcher) codexRolloutWatcher.stop();
   if (codexDesktopWatcher) codexDesktopWatcher.stop();
   if (claudeWatcher) claudeWatcher.stop();
@@ -251,10 +281,20 @@ function initLogWatchers() {
   const rolloutPath = getLatestCodexRollout();
   const desktopLogPath = getLatestCodexDesktopLog();
 
-  console.log(`[Watcher] Initializing. Rollout: ${rolloutPath}, Desktop: ${desktopLogPath}`);
+  console.log(`[Watcher] Initializing. Rollout: ${rolloutPath}, Desktop: ${desktopLogPath}, isInitialLoad: ${isInitialLoad}`);
 
   if (rolloutPath) {
-    // For Rollout JSONL, we start from the beginning of the file to "warm up" the state
+    // Determine start position for rollout
+    let startPos = 0;
+    if (knownFileSizes[rolloutPath] !== undefined) {
+      startPos = knownFileSizes[rolloutPath];
+    } else if (isInitialLoad) {
+      // If it's the first time app starts, jump to end to avoid replaying history
+      try {
+        startPos = fs.statSync(rolloutPath).size;
+      } catch (e) {}
+    }
+
     codexRolloutWatcher = new LogTailer(rolloutPath, (line) => {
       try {
         const entry = JSON.parse(line);
@@ -275,6 +315,17 @@ function initLogWatchers() {
           // Refresh activity for any payload to prevent idle timeout
           state.codex.lastActive = Date.now();
 
+          // DETECT ERRORS OR INTERVENTIONS
+          if (payload.type === 'error' || payload.status === 'failed' || payload.status === 'error') {
+            updateAgentState('codex', 'error', `错误: ${payload.message || '执行失败'}`);
+            return;
+          }
+
+          if (payload.type === 'ask_user' || payload.name === 'ask_user' || payload.type === 'user_intervention') {
+            updateAgentState('codex', 'error', '等待用户授权/输入...');
+            return;
+          }
+
           if (payload.type === 'reasoning' || payload.type === 'task_started') {
             updateAgentState('codex', 'thinking', '正在深度思考中...');
           } else if (payload.type === 'agent_message' || payload.type === 'message') {
@@ -293,15 +344,14 @@ function initLogWatchers() {
       } catch (e) {
         // Partial or invalid JSON
       }
-    }, true); // startAtEnd = true
+    }, { startPos }); 
   }
 
   if (desktopLogPath) {
     // Desktop logs used only for Claude engine signals or generic engine state if needed
-    // We REMOVE turn-complete from here for Codex because Rollout JSONL is more precise
     codexDesktopWatcher = new LogTailer(desktopLogPath, (line) => {
       // Logic for generic engine logs if needed
-    }, true);
+    }, { startAtEnd: true });
   }
 
   // Claude Log - Primary source for Claude
@@ -313,7 +363,7 @@ function initLogWatchers() {
     } else if (line.includes('Successully ran all onQuitCleanup') || line.includes('beforeQuit')) {
       updateAgentState('claude', 'finished', '任务结束');
     }
-  }, true);
+  }, { startAtEnd: true });
 }
 
 // Status Heartbeat to keep frontend in sync
@@ -327,9 +377,9 @@ setInterval(() => {
   const latestRollout = getLatestCodexRollout();
   if (latestRollout && latestRollout !== currentRollout) {
     console.log(`[Watcher] New rollout file detected: ${latestRollout}. Re-initializing...`);
-    initLogWatchers();
+    initLogWatchers(false);
   }
-}, 5000);
+}, 1000);
 
 // Auto-Idle Timers
 setInterval(() => {
@@ -355,9 +405,17 @@ function scanProcesses() {
       if (config.syncLaunch && module.exports.onCodexDetected) {
         module.exports.onCodexDetected();
       }
+      // Re-initialize watchers when codex comes back
+      initLogWatchers(false);
     } else if (!isNowRunning && isCodexRunning) {
       isCodexRunning = false;
       isBrowserOpened = false;
+      updateAgentState('codex', 'offline', 'Codex 未启动 (Offline)');
+    } else if (!isNowRunning) {
+      // Ensure it stays offline if it was already not running
+      if (state.codex.state !== 'offline') {
+        updateAgentState('codex', 'offline', 'Codex 未启动 (Offline)');
+      }
     }
   });
 }
@@ -378,7 +436,7 @@ app.get('/api/config', (req, res) => res.json(config));
 app.post('/api/config', (req, res) => {
   Object.assign(config, req.body);
   saveConfig();
-  initLogWatchers();
+  initLogWatchers(false);
   if (module.exports.onConfigUpdated) module.exports.onConfigUpdated(config);
   broadcast('config', config);
   res.json({ success: true });
@@ -397,7 +455,7 @@ wss.on('connection', (ws) => {
   ws.send(JSON.stringify({ type: 'status', data: state, config: config }));
 });
 
-initLogWatchers();
+initLogWatchers(true);
 server.listen(PORT, () => {
   console.log(`🚦 Monitor Service Live on http://localhost:${PORT}`);
 });
