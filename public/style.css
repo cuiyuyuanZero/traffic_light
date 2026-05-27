@@ -27,6 +27,8 @@
   --transition-smooth: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
   --font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-title: 'Outfit', var(--font-family);
+
+  --widget-scale: 1.0;
 }
 
 * {
@@ -40,7 +42,7 @@ body {
   color: var(--text-primary);
   font-family: var(--font-family);
   min-height: 100vh;
-  overflow-x: hidden;
+  overflow: hidden;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -775,11 +777,11 @@ input:checked + .slider:before {
   user-select: none;
   position: relative;
   
-  --widget-scale: 1.0;
   transform: scale(var(--widget-scale));
   transform-origin: 0 0;
   width: 140px;
   height: 410px;
+  transition: transform 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
 }
 
 /* Make Traffic Light frame Draggable in Electron */
@@ -842,6 +844,28 @@ input:checked + .slider:before {
   background: rgba(255, 255, 255, 0.2);
   border-color: rgba(255, 255, 255, 0.4);
   transform: rotate(45deg);
+}
+
+.widget-close-btn {
+  -webkit-app-region: no-drag;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ef4444;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: var(--transition-smooth);
+}
+
+.widget-close-btn:hover {
+  background: rgba(239, 68, 68, 0.8);
+  color: #fff;
+  transform: scale(1.1);
 }
 
 /* Floating widget status tag pill */

@@ -372,6 +372,15 @@ app.post('/api/config', (req, res) => {
   res.json({ success: true });
 });
 
+app.post('/api/quit', (req, res) => {
+  res.json({ success: true });
+  if (module.exports.onQuitRequested) {
+    module.exports.onQuitRequested();
+  } else {
+    process.exit(0);
+  }
+});
+
 wss.on('connection', (ws) => {
   ws.send(JSON.stringify({ type: 'status', data: state, config: config }));
 });

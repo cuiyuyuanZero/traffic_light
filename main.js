@@ -112,6 +112,23 @@ function createWindow() {
   // Load the floating widget page
   mainWindow.loadURL('http://localhost:19001/widget.html');
 
+  // Add Right-Click Context Menu
+  const { Menu, MenuItem } = require('electron');
+  const contextMenu = new Menu();
+  contextMenu.append(new MenuItem({
+    label: '设置 (Settings)',
+    click: () => { require('electron').shell.openExternal('http://localhost:19001'); }
+  }));
+  contextMenu.append(new MenuItem({ type: 'separator' }));
+  contextMenu.append(new MenuItem({
+    label: '退出应用 (Quit)',
+    click: () => { app.quit(); }
+  }));
+
+  mainWindow.webContents.on('context-menu', (e) => {
+    contextMenu.popup(mainWindow);
+  });
+
   // Track window resizing to dynamically scale content in real-time
   mainWindow.on('resize', () => {
     if (!mainWindow) return;
@@ -170,6 +187,12 @@ monitorServer.onCodexDetected = () => {
   }
 };
 
+// Hook to handle quit request from frontend/server
+monitorServer.onQuitRequested = () => {
+  console.log('[Electron] Quit requested from UI. Exiting...');
+  app.quit();
+};
+
 // Hook into config updates to resize window dynamically (e.g. from browser dashboard)
 monitorServer.onConfigUpdated = (newConfig) => {
   if (mainWindow) {
@@ -186,12 +209,13 @@ monitorServer.onConfigUpdated = (newConfig) => {
       const newX = x + Math.round((currWidth - newWidth) / 2);
       const newY = y + Math.round((currHeight - newHeight) / 2);
       
+      // Use a small delay or requestAnimationFrame if needed, but setBounds is generally smooth
       mainWindow.setBounds({
         x: newX,
         y: newY,
         width: newWidth,
         height: newHeight
-      });
+      }, true); // Use animation on macOS if possible
     }
   }
 };

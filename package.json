@@ -38,12 +38,36 @@
         "zip"
       ]
     },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "deleteAppDataOnUninstall": true
+    },
     "publish": [
       {
         "provider": "github",
         "owner": "cuiyuyuanZero",
         "repo": "traffic_light"
       }
-    ]
+    ],
+    "files": [
+      "main.js",
+      "server.js",
+      "notify_hook.js",
+      "public/**/*",
+      "!node_modules",
+      "!dist"
+    ],
+    "asar": true,
+    "compression": "maximum",
+    "dmg": {
+      "format": "ULFO"
+    }
   }
 }
