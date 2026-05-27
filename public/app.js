@@ -29,6 +29,12 @@ document.addEventListener('DOMContentLoaded', () => {
     green: document.getElementById('claude-light-green')
   };
   const claudeStateText = document.getElementById('claude-state-text');
+  const displayState = {
+    codex: { state: 'finished', activeSince: 0, timer: null },
+    claude: { state: 'finished', activeSince: 0, timer: null }
+  };
+  const GREEN_DELAY_MS = 350;
+  const MIN_ACTIVE_MS = 600;
 
   // Settings & Config
   const configForm = document.getElementById('config-form');
@@ -67,9 +73,19 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Update light rendering
-  function setAgentLight(agent, state) {
+  function setAgentLight(agent, data) {
+    const state = typeof data === 'string' ? data : data.state;
+    const detail = typeof data === 'string' ? '' : data.detail;
+    const counts = typeof data === 'string' ? null : (data.counts || null);
+
     const lights = agent === 'codex' ? codexLights : claudeLights;
     const textEl = agent === 'codex' ? codexStateText : claudeStateText;
+    
+    const counters = {
+      red: document.getElementById(`${agent}-counter-red`),
+      orange: document.getElementById(`${agent}-counter-orange`),
+      green: document.getElementById(`${agent}-counter-green`)
+    };
 
     // Reset classes
     lights.red.classList.remove('active', 'error', 'offline');
@@ -78,11 +94,34 @@ document.addEventListener('DOMContentLoaded', () => {
     
     textEl.classList.remove('red-text', 'orange-text', 'green-text', 'error-text', 'offline-text');
 
+    // Helper to update counters
+    const updateCounter = (key, count) => {
+      if (!counters[key]) return;
+      counters[key].textContent = count || 0;
+      // ONLY SHOW IF COUNT > 1 as requested
+      if (count > 1) {
+        counters[key].classList.add('visible');
+      } else {
+        counters[key].classList.remove('visible');
+      }
+    };
+
+    // Update individual counters for Codex
+    if (agent === 'codex' && counts) {
+      updateCounter('red', (counts.error || 0) + (counts.thinking || 0));
+      updateCounter('orange', counts.executing || 0);
+      // NEVER show counter on green light as per user request for clean idle state
+      updateCounter('green', 0); 
+    } else {
+      // Clear counters for non-multi-session agents
+      Object.values(counters).forEach(c => c && c.classList.remove('visible'));
+    }
+
     if (state === 'error') {
       lights.red.classList.add('active', 'error');
-      textEl.textContent = '需要干预 / 错误 (Attention Required)';
+      textEl.textContent = detail || '需要干预 / 错误';
       textEl.classList.add('red-text');
-      addLog(`${agent.toUpperCase()} 需要人工干预或发生错误！`, 'error');
+      if (detail) addLog(`[${agent.toUpperCase()}] ${detail}`, 'error');
     } else if (state === 'offline') {
       lights.red.classList.add('offline');
       lights.orange.classList.add('offline');
@@ -91,20 +130,56 @@ document.addEventListener('DOMContentLoaded', () => {
       textEl.classList.add('offline-text');
     } else if (state === 'thinking') {
       lights.red.classList.add('active');
-      textEl.textContent = '思考中 (Thinking)';
+      textEl.textContent = detail || '思考中 (Thinking)';
       textEl.classList.add('red-text');
-      addLog(`${agent.toUpperCase()} 智能体当前状态: 🔴 思考中...`, `${agent}`);
+      if (detail && typeof detail === 'string') addLog(`[${agent.toUpperCase()}] ${detail}`, agent);
     } else if (state === 'executing') {
       lights.orange.classList.add('active');
-      textEl.textContent = '执行中 (Executing)';
+      textEl.textContent = detail || '执行中 (Executing)';
       textEl.classList.add('orange-text');
-      addLog(`${agent.toUpperCase()} 智能体当前状态: 🟡 执行中...`, `${agent}`);
+      if (detail && typeof detail === 'string') addLog(`[${agent.toUpperCase()}] ${detail}`, agent);
     } else {
       lights.green.classList.add('active');
-      textEl.textContent = '执行完毕 / 空闲中';
+      textEl.textContent = detail || '执行完毕 / 空闲中';
       textEl.classList.add('green-text');
-      addLog(`${agent.toUpperCase()} 智能体当前状态: 🟢 已完成 / 空闲中`, `${agent}`);
+      if (detail && typeof detail === 'string' && !detail.includes('所有会话空闲')) {
+         addLog(`[${agent.toUpperCase()}] ${detail}`, agent);
+      }
     }
+  }
+
+  function scheduleAgentLight(agent, data, immediate = false) {
+    const nextState = typeof data === 'string' ? data : data.state;
+    const current = displayState[agent];
+    if (!current) {
+      setAgentLight(agent, data);
+      return;
+    }
+
+    if (current.timer) {
+      clearTimeout(current.timer);
+      current.timer = null;
+    }
+
+    const apply = () => {
+      const previousState = current.state;
+      current.state = nextState;
+      if (nextState !== 'finished' && nextState !== 'offline') {
+        current.activeSince = Date.now();
+      } else if (previousState !== nextState) {
+        current.activeSince = 0;
+      }
+      setAgentLight(agent, data);
+    };
+
+    if (immediate || nextState === 'error' || nextState === 'thinking' || nextState === 'executing' || nextState === 'offline') {
+      apply();
+      return;
+    }
+
+    const activeElapsed = current.activeSince ? Date.now() - current.activeSince : MIN_ACTIVE_MS;
+    const delay = Math.max(GREEN_DELAY_MS, MIN_ACTIVE_MS - activeElapsed, 0);
+    current.timer = setTimeout(apply, delay);
   }
 
   // Fetch Settings Config from server
@@ -199,16 +274,12 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Handle init status payload
         if (message.type === 'status') {
-          setAgentLight('codex', message.data.codex.state);
-          setAgentLight('claude', message.data.claude.state);
+          scheduleAgentLight('codex', message.data.codex, true);
+          scheduleAgentLight('claude', message.data.claude, true);
         } 
         // Handle realtime event status update
         else if (message.type === 'event') {
-          const { agent, state, detail } = message.data;
-          setAgentLight(agent, state);
-          if (detail) {
-            addLog(`[${agent.toUpperCase()}] ${detail}`, `${agent}`);
-          }
+          scheduleAgentLight(message.data.agent, message.data);
         }
       } catch (err) {
         addLog(`[ERROR] 解析推送事件时出错: ${err.message}`, 'error');
@@ -233,4 +304,13 @@ document.addEventListener('DOMContentLoaded', () => {
   // Initialize
   loadConfig();
   connectWebSocket();
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      fetch('/api/refresh-status', { method: 'POST' }).catch(() => {});
+    }
+  });
+  window.addEventListener('focus', () => {
+    fetch('/api/refresh-status', { method: 'POST' }).catch(() => {});
+  });
 });

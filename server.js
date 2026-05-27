@@ -6,60 +6,134 @@ const path = require('path');
 const { exec, execSync } = require('child_process');
 
 const os = require('os');
-const HOME = os.homedir();
 
-const PORT = 19001;
-
-// Use userData path for config if running in Electron (main process)
-let userDataPath = __dirname;
-try {
-  const { app } = require('electron');
-  if (app) {
-    userDataPath = app.getPath('userData');
-  }
-} catch (e) {
-  // Not running in Electron or app not available yet
-}
-
-const CONFIG_FILE = path.join(userDataPath, 'traffic-light-config.json');
-
-// Default configurations
-const defaultConfig = {
+// Configuration
+let config = {
   syncLaunch: true,
   scale: 1.0,
-  codexLogPath: path.join(HOME, '.codex/log/codex-tui.log'),
-  claudeLogPath: path.join(HOME, 'Library/Logs/Claude/main.log'),
-  codexRolloutDir: path.join(HOME, '.codex/sessions'),
-  codexDesktopLogDir: path.join(HOME, 'Library/Logs/com.openai.codex')
+  codexLogPath: '',
+  claudeLogPath: '',
+  codexRolloutDir: path.join(os.homedir(), '.codex', 'sessions'),
+  codexDesktopLogDir: path.join(os.homedir(), '.codex', 'logs')
 };
 
-// Load or initialize configuration
-let config = { ...defaultConfig };
-if (fs.existsSync(CONFIG_FILE)) {
-  try {
-    const savedConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-    config = { ...defaultConfig, ...savedConfig };
-  } catch (err) {
-    console.error('Failed to parse config file, using defaults:', err.message);
+const CONFIG_FILE = path.join(os.homedir(), '.traffic-light-service-config.json');
+
+function loadConfig() {
+  if (fs.existsSync(CONFIG_FILE)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+      config = { ...config, ...data };
+    } catch (e) {
+      console.error('Failed to load config:', e.message);
+    }
+  }
+  
+  // Defaults for macOS if paths not set
+  if (!config.claudeLogPath) {
+    config.claudeLogPath = path.join(os.homedir(), 'Library', 'Logs', 'Claude', 'main.log');
   }
 }
 
-// Save configuration helper
 function saveConfig() {
   try {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
-  } catch (err) {
-    console.error('Failed to save config file:', err.message);
+  } catch (e) {
+    console.error('Failed to save config:', e.message);
   }
 }
 
+loadConfig();
+
 // System State
 const state = {
-  codex: { state: 'finished', lastActive: Date.now() },
+  codexSessions: {}, // Map of filePath -> { state, detail, lastActive }
+  codexActiveFilePath: null,
   claude: { state: 'finished', lastActive: Date.now() }
 };
 
+// Aggregated Codex State Helper
+function normalizeCodexSessions(now = Date.now()) {
+  Object.values(state.codexSessions).forEach((session) => {
+    if (session.state !== 'finished' && (now - session.lastActive) > CODEX_IDLE_TIMEOUT_MS) {
+      session.state = 'finished';
+      session.detail = '自动超时恢复';
+    }
+  });
+}
+
+function getAggregateCodexState() {
+  normalizeCodexSessions();
+  const sessions = Object.entries(state.codexSessions).map(([filePath, session]) => ({
+    filePath,
+    ...session
+  }));
+  const counts = { error: 0, executing: 0, thinking: 0, finished: 0, offline: 0 };
+  
+  sessions.forEach(s => {
+    if (counts[s.state] !== undefined) counts[s.state]++;
+  });
+
+  const activeSessions = sessions
+    .filter(s => s.state !== 'finished' && s.state !== 'offline')
+    .sort((a, b) => b.lastActive - a.lastActive);
+  const thinkingSessions = sessions
+    .filter(s => s.state === 'thinking')
+    .sort((a, b) => b.lastActive - a.lastActive);
+  const executingSessions = sessions
+    .filter(s => s.state === 'executing')
+    .sort((a, b) => b.lastActive - a.lastActive);
+  const latestActive = activeSessions[0] || null;
+  const latestSession = sessions.slice().sort((a, b) => b.lastActive - a.lastActive)[0] || null;
+
+  let aggregateState = 'finished';
+  let detail = '所有会话空闲';
+
+  if (counts.error > 0) {
+    aggregateState = 'error';
+    detail = `${counts.error} 个会话需要干预`;
+  } else if (thinkingSessions.length > 0) {
+    aggregateState = 'thinking';
+    detail = thinkingSessions[0].detail || `${thinkingSessions.length} 个会话正在思考`;
+  } else if (executingSessions.length > 0) {
+    aggregateState = 'executing';
+    detail = executingSessions[0].detail || `${executingSessions.length} 个会话正在输出/执行`;
+  } else {
+    aggregateState = 'finished';
+    detail = '执行完毕 / 空闲中';
+  }
+
+  state.codexActiveFilePath = thinkingSessions[0]?.filePath || executingSessions[0]?.filePath || latestActive?.filePath || latestSession?.filePath || null;
+
+  return {
+    state: aggregateState,
+    detail,
+    counts,
+    activeSession: state.codexActiveFilePath ? path.basename(state.codexActiveFilePath) : ''
+  };
+}
+
 const knownFileSizes = {}; // Persistent tracking of file positions to handle session switching
+const CODEX_INFER_BYTES = 512 * 1024;
+const CODEX_IDLE_TIMEOUT_MS = 60000;
+const CODEX_WATCH_COUNT = 100;
+const CODEX_DISCOVERY_INTERVAL_MS = 300;
+
+let lastCodexAggregateSignature = '';
+
+function broadcastCodexAggregate(force = false) {
+  const aggregate = getAggregateCodexState();
+  const signature = JSON.stringify({
+    state: aggregate.state,
+    detail: aggregate.detail,
+    counts: aggregate.counts,
+    activeSession: aggregate.activeSession
+  });
+
+  if (!force && signature === lastCodexAggregateSignature) return;
+  lastCodexAggregateSignature = signature;
+  broadcast('event', { agent: 'codex', ...aggregate });
+}
 
 // Express Setup
 const app = express();
@@ -80,16 +154,35 @@ function broadcast(type, data) {
 }
 
 // Update Agent State
-function updateAgentState(agent, newState, detail = '') {
-  if (state[agent].state !== newState || (detail && detail !== state[agent].detail)) {
-    state[agent].state = newState;
-    state[agent].detail = detail;
-    state[agent].lastActive = Date.now();
-    console.log(`[STATE CHANGE] ${agent.toUpperCase()} -> ${newState} (${detail})`);
-    broadcast('event', { agent, state: newState, detail });
+function updateAgentState(agent, newState, detail = '', filePath = 'default') {
+  if (agent === 'codex') {
+    if (!state.codexSessions[filePath]) {
+      state.codexSessions[filePath] = { state: 'finished', detail: '已连接', lastActive: Date.now() };
+    }
+
+    const session = state.codexSessions[filePath];
+    if (session.state !== newState || session.detail !== detail) {
+      console.log(`[Session Change] ${path.basename(filePath)}: ${session.state} -> ${newState} (${detail})`);
+      
+      session.state = newState;
+      session.detail = detail;
+      session.lastActive = Date.now();
+      
+      broadcastCodexAggregate();
+    } else {
+      session.lastActive = Date.now();
+      broadcastCodexAggregate();
+    }
   } else {
-    // Refresh last active time to prevent auto-idle
-    state[agent].lastActive = Date.now();
+    if (state[agent].state !== newState || (detail && detail !== state[agent].detail)) {
+      state[agent].state = newState;
+      state[agent].detail = detail;
+      state[agent].lastActive = Date.now();
+      console.log(`[Claude Change] ${newState} (${detail})`);
+      broadcast('event', { agent, state: newState, detail });
+    } else {
+      state[agent].lastActive = Date.now();
+    }
   }
 }
 
@@ -99,9 +192,11 @@ class LogTailer {
     this.filePath = filePath;
     this.onLine = onLine;
     this.watcher = null;
+    this.pollInterval = null;
     this.position = options.startPos || 0;
     this.startAtEnd = options.startAtEnd || false;
     this.lineBuffer = '';
+    console.log(`[LogTailer] Initializing for ${path.basename(filePath)} at pos ${this.position}`);
     this.start();
   }
 
@@ -116,9 +211,10 @@ class LogTailer {
       const stats = fs.statSync(this.filePath);
       if (this.startAtEnd) {
         this.position = stats.size;
-        this.startAtEnd = false; // Reset to avoid re-jumping on restart
+        this.startAtEnd = false; 
       }
-      console.log(`[LogTailer] Started tailing ${this.filePath} at pos ${this.position}`);
+      knownFileSizes[this.filePath] = this.position;
+      console.log(`[LogTailer] Started tailing ${path.basename(this.filePath)} (Size: ${stats.size}, WatchPos: ${this.position})`);
 
       this.readNewContent();
 
@@ -131,6 +227,12 @@ class LogTailer {
           setTimeout(() => this.start(), 500);
         }
       });
+
+      if (this.pollInterval) clearInterval(this.pollInterval);
+      this.pollInterval = setInterval(() => {
+        this.readNewContent();
+      }, 300); 
+
     } catch (err) {
       console.error(`[LogTailer] Failed to tail ${this.filePath}:`, err.message);
       setTimeout(() => this.start(), 1000);
@@ -143,12 +245,15 @@ class LogTailer {
       const stats = fs.statSync(this.filePath);
       
       if (stats.size < this.position) {
+        console.log(`[LogTailer] File truncated/reset: ${path.basename(this.filePath)} (${this.position} -> 0)`);
         this.position = 0;
         this.lineBuffer = '';
       }
 
       const bytesToRead = stats.size - this.position;
       if (bytesToRead <= 0) return;
+
+      console.log(`[LogTailer] ${path.basename(this.filePath)} grew: +${bytesToRead} bytes`);
 
       const buffer = Buffer.alloc(bytesToRead);
       const fd = fs.openSync(this.filePath, 'r');
@@ -159,14 +264,17 @@ class LogTailer {
       knownFileSizes[this.filePath] = this.position;
       
       const newText = this.lineBuffer + buffer.toString('utf8');
-      const lines = newText.split('\n');
+      const lines = newText.split(/\r?\n/);
       
-      // The last element might be a partial line if the file doesn't end with \n
       this.lineBuffer = lines.pop() || '';
       
       lines.forEach((line) => {
         if (line.trim()) {
-          this.onLine(line);
+          try {
+            this.onLine(line);
+          } catch (e) {
+            console.error(`[LogTailer] Callback error:`, e.message);
+          }
         }
       });
     } catch (err) {
@@ -179,36 +287,150 @@ class LogTailer {
       this.watcher.close();
       this.watcher = null;
     }
+    if (this.pollInterval) {
+      clearInterval(this.pollInterval);
+      this.pollInterval = null;
+    }
+  }
+}
+
+function classifyCodexLogLine(line) {
+  let entry;
+  try {
+    entry = JSON.parse(line);
+  } catch (e) {
+    return null;
+  }
+
+  const payload = entry.payload || entry;
+  const rawString = line.toLowerCase();
+
+  const isError =
+    payload.type === 'error' ||
+    payload.status === 'failed' ||
+    payload.status === 'error' ||
+    rawString.includes('"type":"error"') ||
+    rawString.includes('"status":"failed"');
+
+  const isIntervention =
+    payload.type === 'ask_user' ||
+    payload.name === 'ask_user' ||
+    payload.type === 'user_intervention' ||
+    payload.status === 'requires_action' ||
+    rawString.includes('ask_user') ||
+    rawString.includes('authorization_required') ||
+    rawString.includes('requires_action');
+
+  if (isError) {
+    return { state: 'error', detail: `错误: ${payload.message || '执行失败'}` };
+  }
+
+  if (isIntervention) {
+    return { state: 'error', detail: '等待用户授权/输入...' };
+  }
+
+  if (entry.type === 'compacted') {
+    return { state: 'thinking', detail: '正在压缩上下文...' };
+  }
+
+  if (entry.type === 'session_meta' || entry.type === 'turn_context') {
+    return { state: 'thinking', detail: '正在准备上下文...' };
+  }
+
+  if (entry.type !== 'response_item' && entry.type !== 'event_msg' && entry.type !== 'tool_call') {
+    return null;
+  }
+
+  if (payload.type === 'task_complete') {
+    return { state: 'finished', detail: '任务执行完毕' };
+  }
+
+  if (payload.phase === 'final_answer') {
+    return { state: 'finished', detail: '任务执行完毕' };
+  }
+
+  if (payload.type === 'reasoning' || payload.type === 'task_started') {
+    return { state: 'thinking', detail: '正在深度思考中...' };
+  }
+
+  if (payload.type === 'agent_message' || payload.type === 'message') {
+    return { state: 'executing', detail: '正在输出回复...' };
+  }
+
+  if (
+    payload.type === 'custom_tool_call' ||
+    payload.type === 'function_call' ||
+    payload.type === 'web_search_call' ||
+    payload.type === 'tool_call'
+  ) {
+    const toolName = payload.name || payload.tool || '工具';
+    return { state: 'executing', detail: `正在执行: ${toolName}` };
+  }
+
+  if (
+    payload.type === 'custom_tool_call_output' ||
+    payload.type === 'function_call_output' ||
+    payload.type === 'web_search_end' ||
+    payload.type === 'patch_apply_end'
+  ) {
+    return { state: 'executing', detail: '处理执行结果...' };
+  }
+
+  if (payload.type === 'thread_goal_updated') {
+    return { state: 'thinking', detail: '正在规划任务...' };
+  }
+
+  return null;
+}
+
+function inferCodexSessionFromTail(filePath, stats) {
+  try {
+    if (!stats || stats.size <= 0) return null;
+
+    const bytesToRead = Math.min(stats.size, CODEX_INFER_BYTES);
+    const buffer = Buffer.alloc(bytesToRead);
+    const fd = fs.openSync(filePath, 'r');
+    fs.readSync(fd, buffer, 0, bytesToRead, stats.size - bytesToRead);
+    fs.closeSync(fd);
+
+    const lines = buffer.toString('utf8').split(/\r?\n/).filter(Boolean);
+    let inferred = null;
+
+    lines.forEach((line) => {
+      const parsed = classifyCodexLogLine(line);
+      if (parsed) inferred = parsed;
+    });
+
+    return inferred;
+  } catch (e) {
+    console.error(`[Infer] Failed to infer Codex state from ${path.basename(filePath)}:`, e.message);
+    return null;
   }
 }
 
 // Helpers to find the latest log files
-function getLatestCodexRollout() {
+function getRecentCodexRollouts(count = 5) {
   try {
     const baseDir = config.codexRolloutDir;
-    if (!fs.existsSync(baseDir)) return null;
+    if (!fs.existsSync(baseDir)) return [];
     
-    // Find all .jsonl files in the nested YYYY/MM/DD structure
     let allFiles = [];
     const years = fs.readdirSync(baseDir).filter(y => /^\d{4}$/.test(y));
-    
-    // Sort years descending and pick latest 2
     years.sort((a, b) => b - a).slice(0, 2).forEach(year => {
       const yearDir = path.join(baseDir, year);
       const months = fs.readdirSync(yearDir).filter(m => /^\d{2}$/.test(m));
-      
       months.sort((a, b) => b - a).slice(0, 2).forEach(month => {
         const monthDir = path.join(yearDir, month);
         const days = fs.readdirSync(monthDir).filter(d => /^\d{2}$/.test(d));
-        
-        days.sort((a, b) => b - a).slice(0, 3).forEach(day => {
+        days.sort((a, b) => b - a).slice(0, 15).forEach(day => {
           const dayDir = path.join(monthDir, day);
           try {
             const files = fs.readdirSync(dayDir)
               .filter(f => f.startsWith('rollout-') && f.endsWith('.jsonl'))
               .map(f => {
-                const p = path.join(dayDir, f);
-                return { path: p, mtime: fs.statSync(p).mtimeMs };
+                const fullPath = path.join(dayDir, f);
+                const stats = fs.statSync(fullPath);
+                return { name: f, path: fullPath, mtime: stats.mtimeMs, size: stats.size };
               });
             allFiles = allFiles.concat(files);
           } catch (e) {}
@@ -216,15 +438,13 @@ function getLatestCodexRollout() {
       });
     });
 
-    if (allFiles.length === 0) return null;
-    
-    // Sort all files by modification time descending
+    if (allFiles.length === 0) return [];
     allFiles.sort((a, b) => b.mtime - a.mtime);
-    return allFiles[0].path;
+    return allFiles.slice(0, count).map(f => f.path);
   } catch (e) {
-    console.error('[Finder] Error finding Codex rollout:', e.message);
+    console.error('[Finder] Error finding Codex rollouts:', e.message);
   }
-  return null;
+  return [];
 }
 
 function getLatestCodexDesktopLog() {
@@ -234,24 +454,18 @@ function getLatestCodexDesktopLog() {
     
     let allFiles = [];
     const years = fs.readdirSync(baseDir).filter(y => /^\d{4}$/.test(y));
-    
     years.sort((a, b) => b - a).slice(0, 2).forEach(year => {
       const yearDir = path.join(baseDir, year);
       const months = fs.readdirSync(yearDir).filter(m => /^\d{2}$/.test(m));
-      
       months.sort((a, b) => b - a).slice(0, 2).forEach(month => {
         const monthDir = path.join(yearDir, month);
         const days = fs.readdirSync(monthDir).filter(d => /^\d{2}$/.test(d));
-        
-        days.sort((a, b) => b - a).slice(0, 3).forEach(day => {
+        days.sort((a, b) => b - a).slice(0, 10).forEach(day => {
           const dayDir = path.join(monthDir, day);
           try {
             const files = fs.readdirSync(dayDir)
               .filter(f => f.startsWith('codex-desktop-') && f.endsWith('.log'))
-              .map(f => {
-                const p = path.join(dayDir, f);
-                return { path: p, mtime: fs.statSync(p).mtimeMs };
-              });
+              .map(f => ({ path: path.join(dayDir, f), mtime: fs.statSync(path.join(dayDir, f)).mtimeMs }));
             allFiles = allFiles.concat(files);
           } catch (e) {}
         });
@@ -259,7 +473,6 @@ function getLatestCodexDesktopLog() {
     });
 
     if (allFiles.length === 0) return null;
-
     allFiles.sort((a, b) => b.mtime - a.mtime);
     return allFiles[0].path;
   } catch (e) {
@@ -269,92 +482,90 @@ function getLatestCodexDesktopLog() {
 }
 
 // Log watch instances
-let codexRolloutWatcher = null;
+let codexRolloutWatchers = [];
 let codexDesktopWatcher = null;
 let claudeWatcher = null;
 
+function createCodexRolloutWatcher(rolloutPath, isInitialLoad = false) {
+  let startPos = 0;
+  const stats = fs.existsSync(rolloutPath) ? fs.statSync(rolloutPath) : { size: 0 };
+
+  if (knownFileSizes[rolloutPath] !== undefined) {
+    startPos = knownFileSizes[rolloutPath];
+  } else if (isInitialLoad) {
+    startPos = stats.size;
+  } else {
+    startPos = Math.max(0, stats.size - 10240);
+  }
+
+  const isRecent = (Date.now() - stats.mtimeMs) < CODEX_IDLE_TIMEOUT_MS;
+  const inferred = isRecent ? inferCodexSessionFromTail(rolloutPath, stats) : null;
+  state.codexSessions[rolloutPath] = {
+    state: inferred ? inferred.state : 'finished',
+    detail: inferred ? inferred.detail : '已连接',
+    lastActive: stats.mtimeMs || Date.now()
+  };
+
+  return new LogTailer(rolloutPath, (line) => {
+    try {
+      const entry = JSON.parse(line);
+      console.log(`[Parser] ${path.basename(rolloutPath)}: ${entry.type}`);
+      const parsed = classifyCodexLogLine(line);
+      if (parsed) {
+        updateAgentState('codex', parsed.state, parsed.detail, rolloutPath);
+      } else if (state.codexSessions[rolloutPath]) {
+        state.codexSessions[rolloutPath].lastActive = Date.now();
+      }
+    } catch (e) {}
+  }, { startPos });
+}
+
+function syncCodexRolloutWatchers(isInitialLoad = false) {
+  const rolloutPaths = getRecentCodexRollouts(CODEX_WATCH_COUNT);
+  const latestSet = new Set(rolloutPaths);
+  const currentSet = new Set(codexRolloutWatchers.map(w => w.filePath));
+  let changed = false;
+
+  codexRolloutWatchers = codexRolloutWatchers.filter((watcher) => {
+    if (latestSet.has(watcher.filePath)) return true;
+    watcher.stop();
+    delete state.codexSessions[watcher.filePath];
+    changed = true;
+    return false;
+  });
+
+  rolloutPaths.forEach((rolloutPath) => {
+    if (currentSet.has(rolloutPath)) return;
+    console.log(`[Watcher] Adding Codex rollout watcher: ${path.basename(rolloutPath)}`);
+    codexRolloutWatchers.push(createCodexRolloutWatcher(rolloutPath, isInitialLoad));
+    changed = true;
+  });
+
+  if (changed) {
+    broadcastCodexAggregate(true);
+  }
+}
+
 function initLogWatchers(isInitialLoad = false) {
-  if (codexRolloutWatcher) codexRolloutWatcher.stop();
+  codexRolloutWatchers.forEach(w => w.stop());
+  codexRolloutWatchers = [];
   if (codexDesktopWatcher) codexDesktopWatcher.stop();
   if (claudeWatcher) claudeWatcher.stop();
 
-  const rolloutPath = getLatestCodexRollout();
+  // Clear stale session states to prevent 'stuck' aggregate results
+  state.codexSessions = {};
+  state.codexActiveFilePath = null;
+  lastCodexAggregateSignature = '';
+
+  console.log(`[Watcher] Initializing Codex rollout watchers. isInitialLoad: ${isInitialLoad}`);
+  syncCodexRolloutWatchers(isInitialLoad);
+
   const desktopLogPath = getLatestCodexDesktopLog();
 
-  console.log(`[Watcher] Initializing. Rollout: ${rolloutPath}, Desktop: ${desktopLogPath}, isInitialLoad: ${isInitialLoad}`);
-
-  if (rolloutPath) {
-    // Determine start position for rollout
-    let startPos = 0;
-    if (knownFileSizes[rolloutPath] !== undefined) {
-      startPos = knownFileSizes[rolloutPath];
-    } else if (isInitialLoad) {
-      // If it's the first time app starts, jump to end to avoid replaying history
-      try {
-        startPos = fs.statSync(rolloutPath).size;
-      } catch (e) {}
-    }
-
-    codexRolloutWatcher = new LogTailer(rolloutPath, (line) => {
-      try {
-        const entry = JSON.parse(line);
-
-        // Handle top-level event types (Compaction and Context Metadata)
-        if (entry.type === 'compacted') {
-          updateAgentState('codex', 'thinking', '正在压缩上下文...');
-          return;
-        } else if (entry.type === 'session_meta' || entry.type === 'turn_context') {
-          updateAgentState('codex', 'thinking', '正在准备上下文...');
-          return;
-        }
-
-        // JSONL Rollout Parsing - PRIMARY SOURCE FOR CODEX
-        if (entry.type === 'response_item' || entry.type === 'event_msg') {
-          const payload = entry.payload || {};
-          
-          // Refresh activity for any payload to prevent idle timeout
-          state.codex.lastActive = Date.now();
-
-          // DETECT ERRORS OR INTERVENTIONS
-          if (payload.type === 'error' || payload.status === 'failed' || payload.status === 'error') {
-            updateAgentState('codex', 'error', `错误: ${payload.message || '执行失败'}`);
-            return;
-          }
-
-          if (payload.type === 'ask_user' || payload.name === 'ask_user' || payload.type === 'user_intervention') {
-            updateAgentState('codex', 'error', '等待用户授权/输入...');
-            return;
-          }
-
-          if (payload.type === 'reasoning' || payload.type === 'task_started') {
-            updateAgentState('codex', 'thinking', '正在深度思考中...');
-          } else if (payload.type === 'agent_message' || payload.type === 'message') {
-            updateAgentState('codex', 'thinking', '正在生成回复...');
-          } else if (payload.type === 'custom_tool_call' || payload.type === 'function_call' || payload.type === 'web_search_call') {
-            const toolName = payload.name || '工具';
-            updateAgentState('codex', 'executing', `正在执行: ${toolName}`);
-          } else if (payload.type === 'custom_tool_call_output' || payload.type === 'function_call_output' || payload.type === 'web_search_end' || payload.type === 'patch_apply_end') {
-            updateAgentState('codex', 'executing', `处理执行结果...`);
-          } else if (payload.type === 'thread_goal_updated') {
-             updateAgentState('codex', 'thinking', '正在规划任务...');
-          } else if (payload.type === 'task_complete') {
-             updateAgentState('codex', 'finished', '任务执行完毕');
-          }
-        }
-      } catch (e) {
-        // Partial or invalid JSON
-      }
-    }, { startPos }); 
-  }
-
   if (desktopLogPath) {
-    // Desktop logs used only for Claude engine signals or generic engine state if needed
-    codexDesktopWatcher = new LogTailer(desktopLogPath, (line) => {
-      // Logic for generic engine logs if needed
-    }, { startAtEnd: true });
+    codexDesktopWatcher = new LogTailer(desktopLogPath, (line) => {}, { startAtEnd: true });
   }
 
-  // Claude Log - Primary source for Claude
   claudeWatcher = new LogTailer(config.claudeLogPath, (line) => {
     if (line.includes('[Auth]') || line.includes('Connecting to')) {
       updateAgentState('claude', 'thinking', '正在思考中...');
@@ -364,33 +575,39 @@ function initLogWatchers(isInitialLoad = false) {
       updateAgentState('claude', 'finished', '任务结束');
     }
   }, { startAtEnd: true });
+
+  broadcastCodexAggregate(true);
 }
 
-// Status Heartbeat to keep frontend in sync
+// Status Heartbeat
 setInterval(() => {
-  broadcast('status', state);
+  const aggregate = getAggregateCodexState();
+  broadcast('status', { codex: aggregate, claude: state.claude, config: config });
 }, 5000);
 
-// Periodically check for newer log files
+// Detect session changes
 setInterval(() => {
-  const currentRollout = codexRolloutWatcher ? codexRolloutWatcher.filePath : null;
-  const latestRollout = getLatestCodexRollout();
-  if (latestRollout && latestRollout !== currentRollout) {
-    console.log(`[Watcher] New rollout file detected: ${latestRollout}. Re-initializing...`);
-    initLogWatchers(false);
-  }
-}, 1000);
+  syncCodexRolloutWatchers(false);
+}, CODEX_DISCOVERY_INTERVAL_MS);
 
-// Auto-Idle Timers
+// Auto-Idle
 setInterval(() => {
-  const idleTimeout = 60000; // 1 minute 
   const now = Date.now();
-
-  ['codex', 'claude'].forEach((agent) => {
-    if (state[agent].state !== 'finished' && (now - state[agent].lastActive) > idleTimeout) {
-      updateAgentState(agent, 'finished', '自动超时恢复');
+  let changed = false;
+  Object.keys(state.codexSessions).forEach(p => {
+    const s = state.codexSessions[p];
+    if (s.state !== 'finished' && (now - s.lastActive) > CODEX_IDLE_TIMEOUT_MS) {
+      s.state = 'finished';
+      s.detail = '自动超时恢复';
+      changed = true;
     }
   });
+  if (changed) {
+    broadcastCodexAggregate();
+  }
+  if (state.claude.state !== 'finished' && (now - state.claude.lastActive) > CODEX_IDLE_TIMEOUT_MS) {
+    updateAgentState('claude', 'finished', '自动超时恢复');
+  }
 }, 5000);
 
 // Sync Launch Process Daemon
@@ -402,20 +619,15 @@ function scanProcesses() {
     const isNowRunning = stdout.trim().length > 0;
     if (isNowRunning && !isCodexRunning) {
       isCodexRunning = true;
-      if (config.syncLaunch && module.exports.onCodexDetected) {
-        module.exports.onCodexDetected();
+      if (config.syncLaunch && module.exports.onCodexDetected) module.exports.onCodexDetected();
+      if (codexRolloutWatchers.length === 0) {
+        initLogWatchers(false);
+      } else {
+        syncCodexRolloutWatchers(false);
       }
-      // Re-initialize watchers when codex comes back
-      initLogWatchers(false);
     } else if (!isNowRunning && isCodexRunning) {
       isCodexRunning = false;
       isBrowserOpened = false;
-      updateAgentState('codex', 'offline', 'Codex 未启动 (Offline)');
-    } else if (!isNowRunning) {
-      // Ensure it stays offline if it was already not running
-      if (state.codex.state !== 'offline') {
-        updateAgentState('codex', 'offline', 'Codex 未启动 (Offline)');
-      }
     }
   });
 }
@@ -430,6 +642,12 @@ app.post('/api/event', (req, res) => {
   } else {
     res.status(400).json({ error: 'Missing params' });
   }
+});
+
+app.post('/api/refresh-status', (req, res) => {
+  syncCodexRolloutWatchers(false);
+  broadcastCodexAggregate(true);
+  res.json({ success: true });
 });
 
 app.get('/api/config', (req, res) => res.json(config));
@@ -452,12 +670,17 @@ app.post('/api/quit', (req, res) => {
 });
 
 wss.on('connection', (ws) => {
-  ws.send(JSON.stringify({ type: 'status', data: state, config: config }));
+  const aggregate = getAggregateCodexState();
+  ws.send(JSON.stringify({ 
+    type: 'status', 
+    data: { codex: aggregate, claude: state.claude }, 
+    config: config 
+  }));
 });
 
 initLogWatchers(true);
-server.listen(PORT, () => {
-  console.log(`🚦 Monitor Service Live on http://localhost:${PORT}`);
+server.listen(19001, () => {
+  console.log(`🚦 Monitor Service Live on http://localhost:19001`);
 });
 
 module.exports = {
@@ -468,4 +691,3 @@ module.exports = {
     broadcast('config', config);
   }
 };
-

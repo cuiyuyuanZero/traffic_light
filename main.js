@@ -24,11 +24,14 @@ autoUpdater.on('error', (err) => {
 });
 
 // Start Express background monitoring server
-// This boots Express, WebSockets, log watchers and process watchers on port 19001
 const monitorServer = require('./server.js');
 
 let mainWindow = null;
 let CONFIG_FILE;
+const WIDGET_BASE_WIDTH = 140;
+const WIDGET_BASE_HEIGHT = 410;
+const WIDGET_MIN_SCALE = 0.4;
+const WIDGET_MAX_SCALE = 2.0;
 
 function initConfigPath() {
   if (!CONFIG_FILE) {
@@ -36,7 +39,6 @@ function initConfigPath() {
   }
 }
 
-// Helper to load screen position coordinates from config
 function getSavedPosition() {
   initConfigPath();
   if (fs.existsSync(CONFIG_FILE)) {
@@ -52,7 +54,6 @@ function getSavedPosition() {
   return null;
 }
 
-// Helper to save screen position coordinates to config
 function savePosition(x, y) {
   try {
     let config = {};
@@ -75,52 +76,51 @@ function createWindow() {
   let x = savedPos ? savedPos.x : undefined;
   let y = savedPos ? savedPos.y : undefined;
 
-  // Load scale from config file
   let scale = 1.0;
+  let currentConfig = {};
   if (fs.existsSync(CONFIG_FILE)) {
     try {
-      const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-      if (config.scale !== undefined) {
-        scale = parseFloat(config.scale) || 1.0;
+      currentConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+      if (currentConfig.scale !== undefined) {
+        scale = parseFloat(currentConfig.scale) || 1.0;
       }
     } catch (e) {}
   }
 
-  // Default position: Right side center of primary display
   if (x === undefined || y === undefined) {
     const primaryDisplay = screen.getPrimaryDisplay();
     const { width, height } = primaryDisplay.workAreaSize;
-    x = width - 180; // 180px from right side
-    y = (height - Math.round(410 * scale)) / 2; // centered vertically
+    x = width - Math.round((WIDGET_BASE_WIDTH * scale) + 40);
+    y = (height - Math.round(WIDGET_BASE_HEIGHT * scale)) / 2;
   }
 
-  // Create transparent, frameless floating window
   mainWindow = new BrowserWindow({
-    width: Math.round(140 * scale),
-    height: Math.round(410 * scale),
+    width: Math.round(WIDGET_BASE_WIDTH * scale),
+    height: Math.round(WIDGET_BASE_HEIGHT * scale),
     x: x,
     y: y,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
-    resizable: true, // NATIVELY RESIZABLE BY USER DRAGGING BORDERS!
-    hasShadow: false, // standard rectangular shadows look bad on transparent circles
-    skipTaskbar: true, // keeps dock clean on macOS
+    resizable: true, 
+    hasShadow: false, 
+    skipTaskbar: true, 
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true
     }
   });
 
-  // Lock aspect ratio of 140 / 410 on macOS natively
-  mainWindow.setAspectRatio(140 / 410);
-  mainWindow.setMinimumSize(84, 246); // 0.6x minimum scale
-  mainWindow.setMaximumSize(252, 738); // 1.8x maximum scale
+  mainWindow.setAspectRatio(WIDGET_BASE_WIDTH / WIDGET_BASE_HEIGHT);
+  mainWindow.setMinimumSize(Math.round(WIDGET_BASE_WIDTH * WIDGET_MIN_SCALE), Math.round(WIDGET_BASE_HEIGHT * WIDGET_MIN_SCALE));
+  mainWindow.setMaximumSize(Math.round(WIDGET_BASE_WIDTH * WIDGET_MAX_SCALE), Math.round(WIDGET_BASE_HEIGHT * WIDGET_MAX_SCALE));
 
-  // Load the floating widget page
   mainWindow.loadURL('http://localhost:19001/widget.html');
 
-  // Add Right-Click Context Menu
+  mainWindow.webContents.on('did-finish-load', () => {
+    monitorServer.broadcastConfig(currentConfig);
+  });
+
   const { Menu, MenuItem } = require('electron');
   const contextMenu = new Menu();
   contextMenu.append(new MenuItem({
@@ -137,13 +137,10 @@ function createWindow() {
     contextMenu.popup(mainWindow);
   });
 
-  // Track window resizing to dynamically scale content in real-time
   mainWindow.on('resize', () => {
     if (!mainWindow) return;
     const [width, height] = mainWindow.getSize();
-    
-    // Scale factor is computed based on window width
-    const currentScale = width / 140;
+    const currentScale = width / WIDGET_BASE_WIDTH;
 
     try {
       let config = {};
@@ -152,21 +149,16 @@ function createWindow() {
       }
       config.scale = parseFloat(currentScale.toFixed(2));
       fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
-
-      // Update state and broadcast config scale via WebSockets
       monitorServer.broadcastConfig(config);
     } catch (err) {
       console.error('[Electron] Failed to update scale on window resize:', err.message);
     }
   });
 
-  // Track window movement to persist coordinates
   let saveTimeout = null;
   mainWindow.on('move', () => {
     if (!mainWindow) return;
     const [currX, currY] = mainWindow.getPosition();
-    
-    // Debounce position saves to avoid excessive disk I/O
     clearTimeout(saveTimeout);
     saveTimeout = setTimeout(() => {
       savePosition(currX, currY);
@@ -178,81 +170,56 @@ function createWindow() {
   });
 }
 
-// Hook into server process watcher triggers
-// When Codex is detected, we can force-show the widget window!
 monitorServer.onCodexDetected = () => {
   if (mainWindow) {
     if (!mainWindow.isVisible()) {
-      console.log('[Electron] Codex process detected. Showing floating widget.');
-      mainWindow.showInactive(); // shows without stealing focus
-    } else {
-      // Flash or shake window subtly to alert
-      console.log('[Electron] Codex detected. Widget already active.');
+      mainWindow.showInactive();
     }
   } else {
-    // Recreate if closed
     createWindow();
   }
 };
 
-// Hook to handle quit request from frontend/server
 monitorServer.onQuitRequested = () => {
-  console.log('[Electron] Quit requested from UI. Exiting...');
   app.quit();
 };
 
-// Hook into config updates to resize window dynamically (e.g. from browser dashboard)
 monitorServer.onConfigUpdated = (newConfig) => {
   if (mainWindow) {
-    const scale = parseFloat(newConfig.scale) || 1.0;
+    const scale = Math.max(WIDGET_MIN_SCALE, Math.min(WIDGET_MAX_SCALE, parseFloat(newConfig.scale) || 1.0));
     const [currWidth, currHeight] = mainWindow.getSize();
-    const newWidth = Math.round(140 * scale);
-    const newHeight = Math.round(410 * scale);
+    const newWidth = Math.round(WIDGET_BASE_WIDTH * scale);
+    const newHeight = Math.round(WIDGET_BASE_HEIGHT * scale);
     
     if (currWidth !== newWidth || currHeight !== newHeight) {
-      console.log(`[Electron] Resizing widget window: ${currWidth}x${currHeight} -> ${newWidth}x${newHeight} (scale: ${scale})`);
-      
-      // Preserve current center position while resizing
       const [x, y] = mainWindow.getPosition();
       const newX = x + Math.round((currWidth - newWidth) / 2);
       const newY = y + Math.round((currHeight - newHeight) / 2);
-      
-      // Use a small delay or requestAnimationFrame if needed, but setBounds is generally smooth
       mainWindow.setBounds({
         x: newX,
         y: newY,
         width: newWidth,
         height: newHeight
-      }, true); // Use animation on macOS if possible
+      }, true);
     }
   }
 };
 
 app.whenReady().then(() => {
-  // Check for updates on startup
   autoUpdater.checkForUpdatesAndNotify();
-
-  // Hide from Dock on Mac to make it feel like a lightweight system widget
   if (process.platform === 'darwin') {
     app.dock.hide();
   }
-
   createWindow();
   if (mainWindow) {
     mainWindow.show();
     mainWindow.focus();
   }
-
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 
 app.on('window-all-closed', () => {
-  // On macOS it is common for applications to stay open until explicit Quit
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+  if (process.platform !== 'darwin') app.quit();
 });

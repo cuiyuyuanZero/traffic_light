@@ -269,11 +269,35 @@ body {
   overflow: hidden;
 }
 
+/* Digital Counter Style */
+.light-counter {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.5);
+  z-index: 10;
+  font-family: 'Outfit', sans-serif;
+  font-weight: 800;
+  font-size: 1.2rem;
+  color: #fff;
+  text-shadow: 0 0 10px rgba(0, 0, 0, 1), 0 0 5px rgba(0,0,0,1);
+  pointer-events: none;
+  opacity: 0;
+  transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  line-height: 1;
+}
+
+.light-counter.visible {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
 /* Base Light Bulbs */
 .light {
   width: 62px;
   height: 62px;
   border-radius: 50%;
+  flex-shrink: 0;
   cursor: pointer;
   position: relative;
   transition: all 0.3s ease;
@@ -345,12 +369,12 @@ body {
   filter: saturate(1.5) brightness(1.4);
   background-color: var(--red-color);
   box-shadow: 0 0 30px 10px var(--red-glow);
-  animation: errorFlash 0.5s infinite alternate ease-in-out;
+  animation: errorFlash 0.25s infinite alternate ease-in-out;
 }
 
 @keyframes errorFlash {
-  from { opacity: 0.3; transform: scale(0.95); filter: brightness(0.8); }
-  to { opacity: 1; transform: scale(1.05); filter: brightness(1.5); box-shadow: 0 0 40px 15px var(--red-glow); }
+  from { opacity: 0.2; transform: scale(0.92); filter: brightness(0.7); }
+  to { opacity: 1; transform: scale(1.08); filter: brightness(1.6); box-shadow: 0 0 45px 20px var(--red-glow); }
 }
 
 /* OFFLINE STATE: Gray / Dimmed */
@@ -795,7 +819,7 @@ input:checked + .slider:before {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.5rem;
+  box-sizing: border-box;
   padding: 0.5rem;
   user-select: none;
   position: relative;
@@ -809,8 +833,8 @@ input:checked + .slider:before {
 
 /* Make Traffic Light frame Draggable in Electron */
 .traffic-light-widget .traffic-light-frame {
-  -webkit-app-region: drag; /* Drag window by clicking and holding the light post frame */
-  margin: 0;
+  -webkit-app-region: drag; 
+  margin: 0 auto; 
   border-color: #2b2e40;
   background: rgba(20, 21, 30, 0.9);
   backdrop-filter: blur(12px);
@@ -827,7 +851,7 @@ input:checked + .slider:before {
 .widget-controls {
   display: flex;
   justify-content: space-between;
-  width: 130px;
+  width: 140px;
   padding: 0 0.5rem;
   align-items: center;
   opacity: 0; /* Hidden by default, shown on hover */
@@ -902,7 +926,7 @@ input:checked + .slider:before {
   padding: 0.35rem 0.75rem;
   border-radius: 20px;
   text-align: center;
-  min-width: 100px;
+  min-width: 120px;
   box-shadow: 0 4px 10px rgba(0,0,0,0.4);
   transition: var(--transition-smooth);
   margin-top: 0.25rem;

@@ -27,18 +27,21 @@
         <div class="light red" id="codex-light-red">
           <span class="light-label">THINKING</span>
         </div>
+        <span class="light-counter" id="codex-counter-red">0</span>
       </div>
       <!-- ORANGE: Executing -->
       <div class="light-hole">
         <div class="light orange" id="codex-light-orange">
           <span class="light-label">EXECUTING</span>
         </div>
+        <span class="light-counter" id="codex-counter-orange">0</span>
       </div>
       <!-- GREEN: Finished -->
       <div class="light-hole">
         <div class="light green active" id="codex-light-green">
           <span class="light-label">FINISHED</span>
         </div>
+        <span class="light-counter" id="codex-counter-green">0</span>
       </div>
     </div>
     
@@ -62,6 +65,9 @@
       const stateTag = document.getElementById('widget-state-tag');
       const btnCloseApp = document.getElementById('btn-close-app');
       const trafficLightFrame = document.querySelector('.traffic-light-frame');
+      const displayState = { state: 'finished', activeSince: 0, timer: null };
+      const GREEN_DELAY_MS = 350;
+      const MIN_ACTIVE_MS = 600;
 
       // Quit application
       btnCloseApp.addEventListener('click', () => {
@@ -71,7 +77,7 @@
       });
 
       function updateScaleOnServer(newScale) {
-        newScale = Math.max(0.6, Math.min(1.8, newScale)); // Clamp between 0.6x and 1.8x
+        newScale = Math.max(0.4, Math.min(2.0, newScale));
         currentScale = newScale;
         document.documentElement.style.setProperty('--widget-scale', newScale);
         
@@ -105,8 +111,7 @@
         const delta = e.deltaY > 0 ? -0.1 : 0.1;
         let nextScale = currentScale + delta;
         
-        // Clamp between 0.6x and 1.8x
-        nextScale = Math.round(Math.max(0.6, Math.min(1.8, nextScale)) * 10) / 10;
+        nextScale = Math.round(Math.max(0.4, Math.min(2.0, nextScale)) * 10) / 10;
         
         if (nextScale !== currentScale) {
           console.log(`[Widget] Zooming to: ${nextScale}`);
@@ -121,16 +126,39 @@
         }
       }, { passive: false });
 
-      function updateLights(state) {
+      function updateLights(data) {
+        const state = typeof data === 'string' ? data : data.state;
+        const counts = typeof data === 'string' ? null : (data.counts || null);
+
         redLight.classList.remove('active', 'error', 'offline');
         orangeLight.classList.remove('active', 'offline');
         greenLight.classList.remove('active', 'offline');
         
         stateTag.classList.remove('red-glow', 'orange-glow', 'green-glow', 'offline-glow');
 
+        // Counters
+        const redCounter = document.getElementById('codex-counter-red');
+        const orangeCounter = document.getElementById('codex-counter-orange');
+        const greenCounter = document.getElementById('codex-counter-green');
+
+        const updateCounter = (el, count) => {
+          if (!el) return;
+          el.textContent = count || 0;
+          // ONLY SHOW IF COUNT > 1 as requested
+          if (count > 1) el.classList.add('visible');
+          else el.classList.remove('visible');
+        };
+
+        if (counts) {
+          updateCounter(redCounter, (counts.error || 0) + (counts.thinking || 0));
+          updateCounter(orangeCounter, counts.executing || 0);
+          // NEVER show counter on green light for a clean idle state
+          updateCounter(greenCounter, 0);
+        }
+
         if (state === 'error') {
           redLight.classList.add('active', 'error');
-          stateTag.textContent = 'CODEX ERROR';
+          stateTag.textContent = 'CODEX ATTENTION';
           stateTag.className = 'widget-tag red-glow';
         } else if (state === 'offline') {
           redLight.classList.add('offline');
@@ -153,6 +181,34 @@
         }
       }
 
+      function scheduleLights(data, immediate = false) {
+        const nextState = typeof data === 'string' ? data : data.state;
+        if (displayState.timer) {
+          clearTimeout(displayState.timer);
+          displayState.timer = null;
+        }
+
+        const apply = () => {
+          const previousState = displayState.state;
+          displayState.state = nextState;
+          if (nextState !== 'finished' && nextState !== 'offline') {
+            displayState.activeSince = Date.now();
+          } else if (previousState !== nextState) {
+            displayState.activeSince = 0;
+          }
+          updateLights(data);
+        };
+
+        if (immediate || nextState === 'error' || nextState === 'thinking' || nextState === 'executing' || nextState === 'offline') {
+          apply();
+          return;
+        }
+
+        const activeElapsed = displayState.activeSince ? Date.now() - displayState.activeSince : MIN_ACTIVE_MS;
+        const delay = Math.max(GREEN_DELAY_MS, MIN_ACTIVE_MS - activeElapsed, 0);
+        displayState.timer = setTimeout(apply, delay);
+      }
+
       function connect() {
         ws = new WebSocket(wsUrl);
         
@@ -164,10 +220,12 @@
           try {
             const msg = JSON.parse(event.data);
             if (msg.type === 'status') {
-              updateLights(msg.data.codex.state);
+              scheduleLights(msg.data.codex, true);
+              // Ensure initial scale from config is applied immediately
               if (msg.config && msg.config.scale) {
                 currentScale = parseFloat(msg.config.scale) || 1.0;
                 document.documentElement.style.setProperty('--widget-scale', currentScale);
+                console.log(`[Widget] Applied initial scale from status: ${currentScale}`);
               }
             } else if (msg.type === 'config') {
               if (msg.data && msg.data.scale) {
@@ -175,7 +233,7 @@
                 document.documentElement.style.setProperty('--widget-scale', currentScale);
               }
             } else if (msg.type === 'event' && msg.data.agent === 'codex') {
-              updateLights(msg.data.state);
+              scheduleLights(msg.data);
             }
           } catch(e) {
             console.error(e);
@@ -188,6 +246,15 @@
       }
 
       connect();
+
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+          fetch('/api/refresh-status', { method: 'POST' }).catch(() => {});
+        }
+      });
+      window.addEventListener('focus', () => {
+        fetch('/api/refresh-status', { method: 'POST' }).catch(() => {});
+      });
     });
   </script>
 </body>
