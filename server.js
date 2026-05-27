@@ -293,7 +293,7 @@ function initLogWatchers() {
       } catch (e) {
         // Partial or invalid JSON
       }
-    }, false); // startAtEnd = false
+    }, true); // startAtEnd = true
   }
 
   if (desktopLogPath) {
@@ -333,7 +333,7 @@ setInterval(() => {
 
 // Auto-Idle Timers
 setInterval(() => {
-  const idleTimeout = 300000; // 5 minutes 
+  const idleTimeout = 60000; // 1 minute 
   const now = Date.now();
 
   ['codex', 'claude'].forEach((agent) => {
