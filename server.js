@@ -9,7 +9,19 @@ const os = require('os');
 const HOME = os.homedir();
 
 const PORT = 19001;
-const CONFIG_FILE = path.join(__dirname, '.config.json');
+
+// Use userData path for config if running in Electron (main process)
+let userDataPath = __dirname;
+try {
+  const { app } = require('electron');
+  if (app) {
+    userDataPath = app.getPath('userData');
+  }
+} catch (e) {
+  // Not running in Electron or app not available yet
+}
+
+const CONFIG_FILE = path.join(userDataPath, 'traffic-light-config.json');
 
 // Default configurations
 const defaultConfig = {

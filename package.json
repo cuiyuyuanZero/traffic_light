@@ -5,7 +5,8 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "server": "node server.js"
+    "server": "node server.js",
+    "build": "electron-builder"
   },
   "dependencies": {
     "electron-updater": "^6.8.3",
@@ -55,14 +56,6 @@
         "owner": "cuiyuyuanZero",
         "repo": "traffic_light"
       }
-    ],
-    "files": [
-      "main.js",
-      "server.js",
-      "notify_hook.js",
-      "public/**/*",
-      "!node_modules",
-      "!dist"
     ],
     "asar": true,
     "compression": "maximum",

@@ -28,10 +28,17 @@ autoUpdater.on('error', (err) => {
 const monitorServer = require('./server.js');
 
 let mainWindow = null;
-const CONFIG_FILE = path.join(__dirname, '.config.json');
+let CONFIG_FILE;
+
+function initConfigPath() {
+  if (!CONFIG_FILE) {
+    CONFIG_FILE = path.join(app.getPath('userData'), 'traffic-light-config.json');
+  }
+}
 
 // Helper to load screen position coordinates from config
 function getSavedPosition() {
+  initConfigPath();
   if (fs.existsSync(CONFIG_FILE)) {
     try {
       const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
@@ -63,6 +70,7 @@ function savePosition(x, y) {
 }
 
 function createWindow() {
+  initConfigPath();
   const savedPos = getSavedPosition();
   let x = savedPos ? savedPos.x : undefined;
   let y = savedPos ? savedPos.y : undefined;
