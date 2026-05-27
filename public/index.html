@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 智能体信号灯监控中心 (Traffic Light Monitor)</title>
+  <!-- Google Fonts Outfit & Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="stars"></div>
+  
+  <header class="app-header">
+    <div class="logo-container">
+      <div class="logo-icon"></div>
+      <h1 id="main-title">TRAFFIC LIGHT <span class="accent">MONITOR</span></h1>
+    </div>
+    <p class="subtitle">AI智能体执行过程实时信号灯监控中心</p>
+  </header>
+
+  <main class="app-container">
+    <div class="dashboard-grid">
+      
+      <!-- Codex Monitor Section -->
+      <section class="monitor-card" id="codex-monitor">
+        <div class="card-header">
+          <div class="agent-badge codex">Codex Agent</div>
+          <div class="connection-status" id="codex-ws-status">连接中...</div>
+        </div>
+        
+        <div class="traffic-light-container">
+          <!-- 3D Traffic Light Frame -->
+          <div class="traffic-light-frame">
+            <!-- RED: Thinking -->
+            <div class="light-hole">
+              <div class="light red" id="codex-light-red">
+                <span class="light-label">THINKING</span>
+              </div>
+            </div>
+            <!-- ORANGE: Executing -->
+            <div class="light-hole">
+              <div class="light orange" id="codex-light-orange">
+                <span class="light-label">EXECUTING</span>
+              </div>
+            </div>
+            <!-- GREEN: Finished -->
+            <div class="light-hole">
+              <div class="light green active" id="codex-light-green">
+                <span class="light-label">FINISHED</span>
+              </div>
+            </div>
+          </div>
+          
+          <!-- State Label Display -->
+          <div class="state-display">
+            <span class="state-label">当前状态</span>
+            <div class="state-value green-text" id="codex-state-text">执行完毕 / 空闲中</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Claude Monitor Section -->
+      <section class="monitor-card" id="claude-monitor">
+        <div class="card-header">
+          <div class="agent-badge claude">Claude Agent</div>
+          <div class="connection-status" id="claude-ws-status">连接中...</div>
+        </div>
+        
+        <div class="traffic-light-container">
+          <!-- 3D Traffic Light Frame -->
+          <div class="traffic-light-frame">
+            <!-- RED: Thinking -->
+            <div class="light-hole">
+              <div class="light red" id="claude-light-red">
+                <span class="light-label">THINKING</span>
+              </div>
+            </div>
+            <!-- ORANGE: Executing -->
+            <div class="light-hole">
+              <div class="light orange" id="claude-light-orange">
+                <span class="light-label">EXECUTING</span>
+              </div>
+            </div>
+            <!-- GREEN: Finished -->
+            <div class="light-hole">
+              <div class="light green active" id="claude-light-green">
+                <span class="light-label">FINISHED</span>
+              </div>
+            </div>
+          </div>
+          
+          <!-- State Label Display -->
+          <div class="state-display">
+            <span class="state-label">当前状态</span>
+            <div class="state-value green-text" id="claude-state-text">执行完毕 / 空闲中</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Settings Card Section -->
+      <section class="settings-card" id="settings-panel">
+        <h2>系统配置与状态控制</h2>
+        <div class="settings-divider"></div>
+        
+        <form class="settings-form" id="config-form">
+          <div class="form-group row">
+            <label for="sync-launch-toggle" class="toggle-label">
+              <span class="title">跟随 Codex 同步打开</span>
+              <span class="desc">检测到 Codex 启动时，自动在浏览器中唤起此面板</span>
+            </label>
+            <div class="switch">
+              <input type="checkbox" id="sync-launch-toggle">
+              <span class="slider round"></span>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="scale-slider">桌面悬浮窗缩放比例 (<span id="scale-value-display">1.0</span>x)</label>
+            <input type="range" id="scale-slider" min="0.6" max="1.6" step="0.1" value="1.0" class="slider-input">
+          </div>
+
+          <div class="form-group">
+            <label for="codex-log-path">Codex 日志文件路径</label>
+            <input type="text" id="codex-log-path" placeholder="/Users/cyyuan/.codex/log/codex-tui.log">
+          </div>
+
+          <div class="form-group">
+            <label for="claude-log-path">Claude 日志文件路径</label>
+            <input type="text" id="claude-log-path" placeholder="/Users/cyyuan/Library/Logs/Claude/main.log">
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary" id="save-config-btn">保存配置</button>
+            <span id="save-success-msg" class="success-message">配置保存成功！</span>
+          </div>
+        </form>
+
+        <div class="settings-divider"></div>
+        
+        <div class="hook-guide">
+          <h3>💡 极致精确度：Codex Hook 配置</h3>
+          <p>要让 Codex 结束执行时<b>瞬间</b>切换为绿灯，请将以下行添加到您的 <code>~/.codex/config.toml</code> 中：</p>
+          <div class="code-box">
+            <code id="hook-config-line">notify = ["node", "/Users/cyyuan/nmp/www/traffic_light_service/notify_hook.js"]</code>
+            <button class="btn-copy" id="btn-copy-hook">复制</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Logs Terminal Section -->
+      <section class="terminal-card" id="logs-panel">
+        <div class="terminal-header">
+          <div class="terminal-dot red-dot"></div>
+          <div class="terminal-dot yellow-dot"></div>
+          <div class="terminal-dot green-dot"></div>
+          <span class="terminal-title">REALTIME EXECUTION LOGS</span>
+          <button class="btn-clear" id="btn-clear-logs">清空</button>
+        </div>
+        <div class="terminal-body" id="log-console">
+          <div class="log-line system-line">[SYSTEM] 信号灯监控后台就绪。等待智能体数据流...</div>
+        </div>
+      </section>
+      
+    </div>
+  </main>
+
+  <footer class="app-footer">
+    <p>Antigravity 信号灯监控中心 v1.0.0 · 守护智能体稳健前行</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

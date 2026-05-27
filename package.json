@@ -1,0 +1,49 @@
+{
+  "name": "traffic-light-service",
+  "version": "1.0.0",
+  "description": "Traffic Light Floating Desktop Widget for Codex and Claude",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "server": "node server.js"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.3",
+    "express": "^4.19.2",
+    "ws": "^8.17.0"
+  },
+  "devDependencies": {
+    "electron": "^30.0.0",
+    "electron-builder": "^26.8.1"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "author": "Antigravity",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cuiyuyuanZero/traffic_light.git"
+  },
+  "build": {
+    "appId": "com.antigravity.traffic-light-service",
+    "productName": "TrafficLight",
+    "directories": {
+      "output": "dist"
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "cuiyuyuanZero",
+        "repo": "traffic_light"
+      }
+    ]
+  }
+}

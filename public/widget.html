@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>信号灯桌面组件 (Traffic Light Widget)</title>
+  <!-- Google Fonts Outfit -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="widget-body">
+
+  <!-- Compact Frameless Widget -->
+  <main class="traffic-light-widget" id="desktop-widget">
+    <!-- Mini Controls (No-Drag area) -->
+    <div class="widget-controls">
+      <div class="drag-handle" title="按住拖拽移动位置">⋮⋮</div>
+      <button class="widget-settings-btn" id="btn-toggle-size" title="调整悬浮窗大小 (小/中/大)">🔍</button>
+      <button class="widget-settings-btn" id="btn-open-settings" title="打开系统设置面板">⚙️</button>
+    </div>
+
+    <!-- 3D Traffic Light Frame -->
+    <div class="traffic-light-frame">
+      <!-- RED: Thinking (glow indicates active state) -->
+      <div class="light-hole">
+        <div class="light red" id="codex-light-red">
+          <span class="light-label">THINKING</span>
+        </div>
+      </div>
+      <!-- ORANGE: Executing -->
+      <div class="light-hole">
+        <div class="light orange" id="codex-light-orange">
+          <span class="light-label">EXECUTING</span>
+        </div>
+      </div>
+      <!-- GREEN: Finished -->
+      <div class="light-hole">
+        <div class="light green active" id="codex-light-green">
+          <span class="light-label">FINISHED</span>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Mini State Tag -->
+    <div class="widget-tag green-glow" id="widget-state-tag">
+      CODEX IDLE
+    </div>
+  </main>
+
+  <!-- Connect to same backend and synchronize -->
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${wsProtocol}//${window.location.host}`;
+      let ws = null;
+      let currentScale = 1.0; // Local scale factor tracker
+      
+      const redLight = document.getElementById('codex-light-red');
+      const orangeLight = document.getElementById('codex-light-orange');
+      const greenLight = document.getElementById('codex-light-green');
+      const stateTag = document.getElementById('widget-state-tag');
+      const btnOpenSettings = document.getElementById('btn-open-settings');
+      const btnToggleSize = document.getElementById('btn-toggle-size');
+      const trafficLightFrame = document.querySelector('.traffic-light-frame');
+
+      // Click to open settings in system browser
+      btnOpenSettings.addEventListener('click', () => {
+        window.open('http://localhost:19001', '_blank');
+      });
+
+      // Size cycling logic (0.7x -> 1.0x -> 1.3x -> 0.7x)
+      function cycleSize() {
+        let nextScale = 1.0;
+        if (currentScale < 0.9) {
+          nextScale = 1.0;
+        } else if (currentScale < 1.2) {
+          nextScale = 1.3;
+        } else {
+          nextScale = 0.7;
+        }
+        
+        console.log(`[Widget] Cycle scale from ${currentScale} to ${nextScale}`);
+        
+        // POST to config endpoint to trigger Electron window bounds resize and WebSocket broadcasts
+        fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scale: nextScale })
+        }).catch(err => {
+          console.error('Failed to cycle widget scale factor:', err);
+        });
+      }
+
+      // Clicking the mini zoom button cycles sizes
+      btnToggleSize.addEventListener('click', (e) => {
+        e.stopPropagation();
+        cycleSize();
+      });
+
+      // Double-clicking the 3D frame cycles sizes
+      trafficLightFrame.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        cycleSize();
+      });
+
+      function updateLights(state) {
+        redLight.classList.remove('active');
+        orangeLight.classList.remove('active');
+        greenLight.classList.remove('active');
+        
+        stateTag.classList.remove('red-glow', 'orange-glow', 'green-glow');
+
+        if (state === 'thinking') {
+          redLight.classList.add('active');
+          stateTag.textContent = 'CODEX THINK';
+          stateTag.className = 'widget-tag red-glow';
+        } else if (state === 'executing') {
+          orangeLight.classList.add('active');
+          stateTag.textContent = 'CODEX EXEC';
+          stateTag.className = 'widget-tag orange-glow';
+        } else {
+          greenLight.classList.add('active');
+          stateTag.textContent = 'CODEX IDLE';
+          stateTag.className = 'widget-tag green-glow';
+        }
+      }
+
+      function connect() {
+        ws = new WebSocket(wsUrl);
+        
+        ws.onopen = () => {
+          console.log('Widget connected to server');
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'status') {
+              updateLights(msg.data.codex.state);
+              if (msg.config && msg.config.scale) {
+                currentScale = parseFloat(msg.config.scale) || 1.0;
+                document.documentElement.style.setProperty('--widget-scale', currentScale);
+              }
+            } else if (msg.type === 'config') {
+              if (msg.data && msg.data.scale) {
+                currentScale = parseFloat(msg.data.scale) || 1.0;
+                document.documentElement.style.setProperty('--widget-scale', currentScale);
+              }
+            } else if (msg.type === 'event' && msg.data.agent === 'codex') {
+              updateLights(msg.data.state);
+            }
+          } catch(e) {
+            console.error(e);
+          }
+        };
+
+        ws.onclose = () => {
+          setTimeout(connect, 3000);
+        };
+      }
+
+      connect();
+    });
+  </script>
+</body>
+</html>

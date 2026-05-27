@@ -1,0 +1,8 @@
+node_modules/
+.config.json
+.DS_Store
+*.log
+dist/
+out/
+.idea/
+.vscode/
